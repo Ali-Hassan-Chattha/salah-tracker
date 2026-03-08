@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Salah Tracker</title>
+  
+  <!-- Tailwind CSS for Styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' }
+  </script>
+
+  <!-- Import Maps (Tells the browser where to download React, Icons, and Firebase) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "lucide-react": "https://esm.sh/lucide-react@0.292.0?deps=react@18.2.0",
+        "firebase/app": "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js",
+        "firebase/auth": "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js",
+        "firebase/firestore": "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js"
+      }
+    }
+  </script>
+
+  <!-- Babel Compiler (Translates JSX code into standard browser JavaScript) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 transition-colors duration-200">
+  
+  <!-- The App will render inside this div -->
+  <div id="root"></div>
+
+  <!-- Your Main Application Code -->
+  <script type="text/babel" data-type="module">
+    import React, { useState, useMemo, useEffect, useRef } from 'react';
+    import { createRoot } from 'react-dom/client';
+    import { ChevronLeft, ChevronRight, Check, CalendarDays, Menu, Sun, Moon, Monitor, BarChart2, X, TrendingUp, LogIn, LogOut, AlertCircle, Sparkles, Loader2 } from 'lucide-react';
+    import { initializeApp } from 'firebase/app';
+    import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, signInWithPopup, GoogleAuthProvider, signOut } from 'firebase/auth';
+    import { getFirestore, doc, onSnapshot, setDoc } from 'firebase/firestore';
+
+    // --- Firebase Setup ---
+    // Added a dummy config fallback so it doesn't crash when opening locally from your C: Drive
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+        apiKey: "demo", authDomain: "demo.firebaseapp.com", projectId: "demo", storageBucket: "demo.appspot.com", messagingSenderId: "demo", appId: "1:demo:web:demo"
+    };
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+    // --- Constants & Config ---
+    const PRAYERS = [
+      { id: 'fajr', name: 'Fajr', short: 'F' },
+      { id: 'dhuhr', name: 'Dhuhr', short: 'D' },
+      { id: 'asr', name: 'Asr', short: 'A' },
+      { id: 'maghrib', name: 'Maghrib', short: 'M' },
+      { id: 'isha', name: 'Isha', short: 'I' }
+    ];
+
+    // --- Helper Functions ---
+    const getFormatDate = (date) => {
+      const year = date.getFullYear();
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const day = String(date.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    };
+
+    const getDaysInMonth = (year, month) => {
+      const days = [];
+      const date = new Date(year, month, 1);
+      while (date.getMonth() === month) {
+        days.push(new Date(date));
+        date.setDate(date.getDate() + 1);
+      }
+      return days;
+    };
+
+    const getDaysInWeek = (date) => {
+      const days = [];
+      const d = new Date(date);
+      const currentDay = d.getDay(); // 0 is Sunday
+      d.setDate(d.getDate() - currentDay);
+      for (let i = 0; i < 7; i++) {
+        days.push(new Date(d));
+        d.setDate(d.getDate() + 1);
+      }
+      return days;
+    };
+
+    // --- Main Application Component ---
+    function App() {
+      const todayDate = new Date();
+      const todayStr = getFormatDate(todayDate);
+      
+      // State
+      const [viewMode, setViewMode] = useState('week'); // 'week' or 'month'
+      const [currentViewDate, setCurrentViewDate] = useState(todayDate);
+      const [trackerData, setTrackerData] = useState({});
+      const [isMenuOpen, setIsMenuOpen] = useState(false);
+      const [theme, setTheme] = useState('auto');
+      const [isSystemDark, setIsSystemDark] = useState(false);
+      const [isStatsModalOpen, setIsStatsModalOpen] = useState(false);
+      const [user, setUser] = useState(null);
+      const [authError, setAuthError] = useState(null);
+      
+      // AI Coach State
+      const [isAiModalOpen, setIsAiModalOpen] = useState(false);
+      const [aiResponse, setAiResponse] = useState('');
+      const [isAiLoading, setIsAiLoading] = useState(false);
+      
+      const selectedRowRef = useRef(null);
+
+      // --- Auth & Data Sync ---
+      useEffect(() => {
+        const initAuth = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (err) {
+            console.error("Auth initialization error", err);
+          }
+        };
+        initAuth();
+        const unsubscribe = onAuthStateChanged(auth, setUser);
+        return () => unsubscribe();
+      }, []);
+
+      useEffect(() => {
+        if (!user) return;
+        const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'prayerData', 'tracker');
+        const unsubscribe = onSnapshot(docRef, (docSnap) => {
+          if (docSnap.exists()) {
+            setTrackerData(docSnap.data());
+          }
+        }, (error) => {
+          console.error("Error fetching data", error);
+        });
+        return () => unsubscribe();
+      }, [user]);
+
+      // Theme detection
+      useEffect(() => {
+        const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        setIsSystemDark(mediaQuery.matches);
+        const handler = (e) => setIsSystemDark(e.matches);
+        mediaQuery.addEventListener('change', handler);
+        return () => mediaQuery.removeEventListener('change', handler);
+      }, []);
+
+      const isDarkMode = theme === 'dark' || (theme === 'auto' && isSystemDark);
+
+      // Scroll to the selected date on initial load or when date changes
+      useEffect(() => {
+        if (selectedRowRef.current) {
+          selectedRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+      }, [currentViewDate, viewMode]);
+
+      // Derived Data
+      const daysToDisplay = useMemo(() => {
+        if (viewMode === 'month') {
+          return getDaysInMonth(currentViewDate.getFullYear(), currentViewDate.getMonth());
+        } else {
+          return getDaysInWeek(currentViewDate);
+        }
+      }, [currentViewDate, viewMode]);
+
+      const navLabel = useMemo(() => {
+        if (viewMode === 'month') {
+          return currentViewDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+        } else {
+          const start = daysToDisplay[0];
+          const end = daysToDisplay[6];
+          return `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
+        }
+      }, [currentViewDate, viewMode, daysToDisplay]);
+
+      // Handlers
+      const handleNavigate = (offset) => {
+        setCurrentViewDate(prev => {
+          const newDate = new Date(prev);
+          if (viewMode === 'month') {
+            newDate.setMonth(newDate.getMonth() + offset);
+          } else {
+            newDate.setDate(newDate.getDate() + (offset * 7));
+          }
+          return newDate;
+        });
+      };
+
+      const goToToday = () => {
+        setCurrentViewDate(todayDate);
+      };
+
+      const togglePrayer = (dateStr, prayerId) => {
+        setTrackerData(prev => {
+          const dayData = prev[dateStr] || {};
+          const isCompleted = !!dayData[prayerId];
+          const newData = {
+            ...prev,
+            [dateStr]: {
+              ...dayData,
+              [prayerId]: !isCompleted // Toggle the boolean
+            }
+          };
+
+          // Sync to firestore
+          if (user) {
+            const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'prayerData', 'tracker');
+            setDoc(docRef, newData, { merge: true }).catch(err => console.error("Error saving data", err));
+          }
+
+          return newData;
+        });
+      };
+
+      const handleGoogleSignIn = async () => {
+        const provider = new GoogleAuthProvider();
+        try {
+          await signInWithPopup(auth, provider);
+        } catch (error) {
+          console.error("Error signing in with Google", error);
+          if (error.code === 'auth/unauthorized-domain') {
+            setAuthError("Google Sign-In is restricted in this preview environment for security. Don't worry, your data is already being safely saved to your current device session!");
+          } else {
+            setAuthError(error.message);
+          }
+        }
+      };
+
+      const handleSignOut = async () => {
+        try {
+          await signOut(auth);
+          await signInAnonymously(auth);
+        } catch (error) {
+          console.error("Error signing out", error);
+        }
+      };
+
+      // --- Gemini AI Integration ---
+      const generateAIInsights = async () => {
+        setIsAiLoading(true);
+        setAiResponse('');
+        
+        let dataSummary = "";
+        for(let i = 6; i >= 0; i--) {
+          const d = new Date();
+          d.setDate(d.getDate() - i);
+          const dateStr = getFormatDate(d);
+          const dayData = trackerData[dateStr] || {};
+          
+          const completed = PRAYERS.filter(p => dayData[p.id]).map(p => p.name).join(', ');
+          const missed = PRAYERS.filter(p => !dayData[p.id]).map(p => p.name).join(', ');
+          dataSummary += `${dateStr}: Completed: ${completed || 'None'} | Missed: ${missed || 'All'}\n`;
+        }
+
+        const apiKey = ""; // You would place a real API key here for local usage
+        if(!apiKey) {
+           setAiResponse("To use the AI Coach locally, you'll need to add a Gemini API Key to the code! ✨");
+           setIsAiLoading(false);
+           return;
+        }
+
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+        const prompt = `Act as an empathetic, wise, and encouraging Islamic spiritual coach. Review my Salah (prayer) tracking data for the last 7 days:\n${dataSummary}\nBased on this data, provide a short, personalized, and encouraging message (max 3 paragraphs). If I am consistent, praise my dedication. If I am missing prayers, offer gentle, practical advice to improve without being judgmental. Include a short, relevant Quranic verse or Hadith (in English) for motivation. Format the text cleanly. Use plain text with **bold** for emphasis. Do not use complex markdown headers.`;
+
+        const payload = { contents: [{ parts: [{ text: prompt }] }] };
+
+        try {
+            const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            if (!res.ok) throw new Error(`API Error: ${res.status}`);
+            const data = await res.json();
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) { setAiResponse(text); } else { throw new Error('No text returned from Gemini'); }
+        } catch (error) {
+            setAiResponse("I'm sorry, I'm having trouble connecting to the AI Coach right now. Please check your API Key and try again later. ✨");
+        }
+        setIsAiLoading(false);
+      };
+
+      const formatAIText = (text) => {
+        return text.split('\n').map((line, i) => {
+          if (!line.trim()) return <div key={i} className="h-3" />;
+          const parts = line.split(/(\*\*.*?\*\*)/g);
+          return (
+            <p key={i} className="text-sm leading-relaxed text-slate-700 dark:text-slate-300">
+              {parts.map((part, j) =>
+                part.startsWith('**') && part.endsWith('**') ?
+                  <strong key={j} className="text-emerald-700 dark:text-emerald-400">{part.slice(2, -2)}</strong> : part
+              )}
+            </p>
+          );
+        });
+      };
+
+      // --- Stats Calculations ---
+      const currentYear = todayDate.getFullYear();
+      const lastYear = currentYear - 1;
+      
+      const { currentYearCount, lastYearCount } = useMemo(() => {
+        let curr = 0;
+        let last = 0;
+        Object.entries(trackerData).forEach(([dateStr, dayData]) => {
+          const year = parseInt(dateStr.split('-')[0]);
+          const count = Object.values(dayData).filter(Boolean).length;
+          if (year === currentYear) curr += count;
+          if (year === lastYear) last += count;
+        });
+        return { currentYearCount: curr, lastYearCount: last };
+      }, [trackerData, currentYear, lastYear]);
+
+      const currentYearPercent = Math.min(100, Math.round((currentYearCount / 1825) * 100));
+      const lastYearPercent = Math.min(100, Math.round((lastYearCount / 1825) * 100));
+      const yoyGrowth = lastYearCount === 0 
+        ? (currentYearCount > 0 ? '+100%' : '0%') 
+        : `${currentYearCount >= lastYearCount ? '+' : ''}${Math.round(((currentYearCount - lastYearCount) / lastYearCount) * 100)}%`;
+
+      return (
+        <div className={`${isDarkMode ? 'dark' : ''}`}>
+          <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans selection:bg-emerald-200 dark:selection:bg-emerald-800/50 transition-colors duration-200">
+            <div className="max-w-2xl mx-auto bg-white dark:bg-slate-950 min-h-screen shadow-sm sm:shadow-xl sm:my-8 sm:min-h-[auto] sm:rounded-3xl overflow-hidden flex flex-col relative transition-colors duration-200">
+              
+              {/* Header Section */}
+              <header className="bg-emerald-600 dark:bg-emerald-800 text-white p-5 shadow-md relative z-20 transition-colors duration-200">
+                <div className="flex justify-between items-center mb-4 gap-2">
+                  
+                  {/* Auth / Sign In (Top Left) */}
+                  <div className="flex items-center min-w-[70px]">
+                    {user && !user.isAnonymous ? (
+                      <button 
+                        onClick={handleSignOut} 
+                        className="text-emerald-100 hover:text-white transition-colors flex items-center gap-1.5 text-xs sm:text-sm font-medium bg-emerald-700/50 dark:bg-emerald-900/50 px-2.5 py-1.5 rounded-full"
+                        title="Sign Out"
+                      >
+                        {user.photoURL ? (
+                          <img src={user.photoURL} alt="User avatar" className="w-5 h-5 rounded-full border border-emerald-500" />
+                        ) : (
+                          <LogOut size={16} />
+                        )}
+                        <span className="hidden sm:inline max-w-[80px] truncate">{user.displayName || 'Sign Out'}</span>
+                      </button>
+                    ) : (
+                      <button 
+                        onClick={handleGoogleSignIn} 
+                        className="text-emerald-100 hover:text-white transition-colors flex items-center gap-1.5 text-xs sm:text-sm font-medium bg-emerald-700/50 dark:bg-emerald-900/50 px-2.5 py-1.5 rounded-full"
+                        title="Sign in with Google to sync"
+                      >
+                        <LogIn size={16} />
+                        <span className="hidden sm:inline">Sign In</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <h1 className="text-lg sm:text-xl font-bold tracking-wide text-center truncate">Salah Tracker</h1>
+                  
+                  <div className="flex items-center gap-1 sm:gap-2 min-w-[70px] justify-end">
+                    <button 
+                      onClick={goToToday}
+                      className="text-emerald-100 hover:text-white transition-colors flex items-center gap-1 text-sm font-medium bg-emerald-700/50 dark:bg-emerald-900/50 px-3 py-1.5 rounded-full"
+                      title="Jump to Today"
+                    >
+                      <CalendarDays size={16} />
+                      Today
+                    </button>
+
+                    {/* Hamburger Menu */}
+                    <div className="relative ml-1">
+                      <button
+                        onClick={() => setIsMenuOpen(!isMenuOpen)}
+                        className="p-1.5 rounded-full hover:bg-emerald-700/50 dark:hover:bg-emerald-900/50 transition-colors text-emerald-50 hover:text-white"
+                        title="Menu"
+                      >
+                        <Menu size={20} />
+                      </button>
+
+                      {isMenuOpen && (
+                        <>
+                          <div
+                            className="fixed inset-0 z-40"
+                            onClick={() => setIsMenuOpen(false)}
+                          />
+                          <div className="absolute right-0 mt-2 w-56 bg-white dark:bg-slate-800 rounded-2xl shadow-xl border border-slate-100 dark:border-slate-700 py-2 z-50 overflow-hidden transform origin-top-right transition-all">
+                            <div className="px-4 py-2 text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                              Theme
+                            </div>
+                            <button
+                              onClick={() => { setTheme('light'); setIsMenuOpen(false); }}
+                              className={`w-full text-left px-4 py-2 text-sm flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors ${theme === 'light' ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-slate-700 dark:text-slate-300'}`}
+                            >
+                              <Sun size={16} /> Light
+                            </button>
+                            <button
+                              onClick={() => { setTheme('dark'); setIsMenuOpen(false); }}
+                              className={`w-full text-left px-4 py-2 text-sm flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors ${theme === 'dark' ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-slate-700 dark:text-slate-300'}`}
+                            >
+                              <Moon size={16} /> Dark
+                            </button>
+                            <button
+                              onClick={() => { setTheme('auto'); setIsMenuOpen(false); }}
+                              className={`w-full text-left px-4 py-2 text-sm flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors ${theme === 'auto' ? 'text-emerald-600 dark:text-emerald-400 font-medium' : 'text-slate-700 dark:text-slate-300'}`}
+                            >
+                              <Monitor size={16} /> Auto
+                            </button>
+                            
+                            <div className="border-t border-slate-100 dark:border-slate-700 my-1"></div>
+                            
+                            <div className="px-4 py-2 text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wider">
+                              Insights
+                            </div>
+                            <button
+                              onClick={() => { setIsStatsModalOpen(true); setIsMenuOpen(false); }}
+                              className="w-full text-left px-4 py-2 text-sm flex items-center gap-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors text-slate-700 dark:text-slate-300"
+                            >
+                              <BarChart2 size={16} /> YoY Stats
+                            </button>
+
+                            <div className="border-t border-slate-100 dark:border-slate-700 my-1"></div>
+
+                            <div className="px-4 py-2 text-xs font-semibold text-emerald-400 dark:text-emerald-500 uppercase tracking-wider flex items-center gap-1">
+                              Gemini AI
+                            </div>
+                            <button
+                              onClick={() => { setIsAiModalOpen(true); setIsMenuOpen(false); }}
+                              className="w-full text-left px-4 py-2 text-sm flex items-center gap-3 hover:bg-emerald-50 dark:hover:bg-emerald-900/30 transition-colors text-emerald-600 dark:text-emerald-400 font-medium"
+                            >
+                              <Sparkles size={16} className="text-amber-500" /> ✨ Spiritual Coach
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* View Mode Tabs */}
+                <div className="flex bg-emerald-700/50 dark:bg-emerald-900/50 rounded-xl p-1 mb-4 backdrop-blur-sm">
+                  {['week', 'month'].map(mode => (
+                    <button
+                      key={mode}
+                      onClick={() => setViewMode(mode)}
+                      className={`flex-1 py-1.5 text-sm font-medium rounded-lg capitalize transition-all ${
+                        viewMode === mode 
+                          ? 'bg-white dark:bg-slate-800 text-emerald-700 dark:text-emerald-400 shadow-sm' 
+                          : 'text-emerald-100 hover:text-white dark:text-emerald-200 dark:hover:text-white'
+                      }`}
+                    >
+                      {mode}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Navigator */}
+                <div className="flex items-center justify-between bg-emerald-700/40 dark:bg-emerald-900/40 rounded-2xl p-2 backdrop-blur-sm">
+                  <button 
+                    onClick={() => handleNavigate(-1)}
+                    className="p-2 hover:bg-emerald-600 dark:hover:bg-emerald-700 rounded-xl transition-colors"
+                  >
+                    <ChevronLeft size={24} />
+                  </button>
+                  <div className="text-base sm:text-lg font-semibold flex-1 text-center whitespace-nowrap overflow-hidden text-ellipsis px-2">
+                    {navLabel}
+                  </div>
+                  <button 
+                    onClick={() => handleNavigate(1)}
+                    className="p-2 hover:bg-emerald-600 dark:hover:bg-emerald-700 rounded-xl transition-colors"
+                  >
+                    <ChevronRight size={24} />
+                  </button>
+                </div>
+              </header>
+
+              {/* Table Section */}
+              <main className="flex-1 overflow-y-auto relative bg-slate-50/50 dark:bg-slate-900/50">
+                <div className="inline-block min-w-full align-middle">
+                  <table className="min-w-full border-collapse text-sm">
+                    <thead className="bg-white dark:bg-slate-950 sticky top-0 z-10 shadow-sm ring-1 ring-black ring-opacity-5 dark:ring-white/10">
+                      <tr>
+                        <th scope="col" className="py-3.5 pl-4 pr-3 text-left font-semibold text-slate-900 dark:text-slate-100 sm:pl-6 w-24 border-b border-slate-200 dark:border-slate-800">
+                          Date
+                        </th>
+                        {PRAYERS.map(prayer => (
+                          <th key={prayer.id} scope="col" className="px-2 py-3.5 text-center font-semibold text-slate-900 dark:text-slate-100 border-b border-slate-200 dark:border-slate-800">
+                            <span className="hidden sm:inline">{prayer.name}</span>
+                            <span className="sm:hidden" title={prayer.name}>{prayer.short}</span>
+                          </th>
+                        ))}
+                        <th scope="col" className="px-3 py-3.5 text-center font-semibold text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                          Total
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200 dark:divide-slate-800 bg-white dark:bg-slate-950">
+                      {daysToDisplay.map((date) => {
+                        const dateStr = getFormatDate(date);
+                        const dayData = trackerData[dateStr] || {};
+                        const isToday = dateStr === todayStr;
+                        const isSelectedDate = dateStr === getFormatDate(currentViewDate);
+                        
+                        const completedCount = PRAYERS.reduce((acc, prayer) => acc + (dayData[prayer.id] ? 1 : 0), 0);
+
+                        return (
+                          <tr 
+                            key={dateStr} 
+                            ref={isSelectedDate ? selectedRowRef : null}
+                            className={`${isToday ? 'bg-emerald-50/60 dark:bg-emerald-900/20' : 'hover:bg-slate-50 dark:hover:bg-slate-900/50'} ${isSelectedDate && !isToday ? 'bg-slate-100/50 dark:bg-slate-800/50' : ''}`}
+                          >
+                            {/* Date Column */}
+                            <td className="whitespace-nowrap py-3 pl-4 pr-3 text-sm font-medium sm:pl-6">
+                              <div className={`flex flex-col ${isToday ? 'text-emerald-700 dark:text-emerald-400 font-bold' : 'text-slate-700 dark:text-slate-300'}`}>
+                                <span>{date.toLocaleDateString('en-US', { weekday: 'short' })}</span>
+                                <span className={isToday ? 'text-emerald-600 dark:text-emerald-500' : 'text-slate-500 dark:text-slate-500'}>
+                                  {date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                                </span>
+                              </div>
+                            </td>
+
+                            {/* Prayer Checkboxes */}
+                            {PRAYERS.map(prayer => {
+                              const isChecked = !!dayData[prayer.id];
+                              return (
+                                <td key={prayer.id} className="whitespace-nowrap px-1 py-3 text-center">
+                                  <button
+                                    onClick={() => togglePrayer(dateStr, prayer.id)}
+                                    className={`mx-auto w-8 h-8 rounded-lg border-2 flex items-center justify-center transition-all ${
+                                      isChecked 
+                                        ? 'bg-emerald-500 border-emerald-500 text-white shadow-sm dark:shadow-none' 
+                                        : 'bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-transparent hover:border-emerald-300 dark:hover:border-emerald-700 hover:bg-emerald-50 dark:hover:bg-emerald-900/30'
+                                    }`}
+                                  >
+                                    <Check strokeWidth={3} size={18} className={isChecked ? 'opacity-100' : 'opacity-0'} />
+                                  </button>
+                                </td>
+                              );
+                            })}
+
+                            {/* Daily Total Column */}
+                            <td className="whitespace-nowrap px-3 py-3 text-center text-sm font-medium">
+                              <span className={`inline-flex items-center justify-center w-8 h-8 rounded-full ${
+                                completedCount === 5 ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/60 dark:text-emerald-300' : 
+                                completedCount > 0 ? 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300' : 'text-slate-400 dark:text-slate-600'
+                              }`}>
+                                {completedCount}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </main>
+
+              {/* AI Coach Modal */}
+              {isAiModalOpen && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md transition-opacity">
+                  <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all border border-emerald-100 dark:border-emerald-900/50 flex flex-col max-h-[85vh]">
+                    
+                    {/* Modal Header */}
+                    <div className="flex justify-between items-center p-5 border-b border-emerald-100/50 dark:border-emerald-900/30 bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-emerald-900/40 dark:to-teal-900/40">
+                      <h2 className="font-bold text-lg text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
+                        <Sparkles className="text-amber-500" /> AI Spiritual Coach
+                      </h2>
+                      <button 
+                        onClick={() => setIsAiModalOpen(false)} 
+                        className="p-1 rounded-full text-emerald-600/70 hover:text-emerald-800 dark:text-emerald-400/70 dark:hover:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-800/50 transition-colors"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+                    
+                    {/* Modal Body */}
+                    <div className="p-6 overflow-y-auto flex-1">
+                      {!aiResponse && !isAiLoading ? (
+                        <div className="text-center py-6">
+                          <div className="w-16 h-16 bg-emerald-100 dark:bg-emerald-900/40 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <Sparkles className="text-emerald-500 dark:text-emerald-400 w-8 h-8" />
+                          </div>
+                          <h3 className="text-lg font-semibold text-slate-800 dark:text-slate-200 mb-2">Need some motivation?</h3>
+                          <p className="text-sm text-slate-600 dark:text-slate-400 mb-6 px-4">
+                            Our Gemini AI can analyze your tracker data from the last 7 days and provide you with personalized, encouraging advice and relevant Islamic reminders.
+                          </p>
+                          <button
+                            onClick={generateAIInsights}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-3 px-6 rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 w-full active:scale-95"
+                          >
+                            ✨ Generate My Insights
+                          </button>
+                        </div>
+                      ) : isAiLoading ? (
+                        <div className="flex flex-col items-center justify-center py-12 space-y-4">
+                          <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
+                          <p className="text-sm font-medium text-emerald-600 dark:text-emerald-400 animate-pulse">
+                            Analyzing your week and finding reminders...
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
+                          <div className="bg-emerald-50/50 dark:bg-emerald-900/10 border border-emerald-100 dark:border-emerald-800/30 rounded-2xl p-5">
+                            {formatAIText(aiResponse)}
+                          </div>
+                          <button
+                            onClick={generateAIInsights}
+                            className="w-full text-sm font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 dark:hover:text-emerald-300 py-2 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-colors"
+                          >
+                            Regenerate Insights
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Stats Modal */}
+              {isStatsModalOpen && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm transition-opacity">
+                  <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden transform transition-all border border-slate-200 dark:border-slate-700">
+                    <div className="flex justify-between items-center p-5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50">
+                      <h2 className="font-bold text-lg text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                        <TrendingUp className="text-emerald-500" /> YoY Insights
+                      </h2>
+                      <button 
+                        onClick={() => setIsStatsModalOpen(false)} 
+                        className="p-1 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                      >
+                        <X size={20} />
+                      </button>
+                    </div>
+                    
+                    <div className="p-6 space-y-6">
+                      {/* Current Year */}
+                      <div>
+                        <div className="flex justify-between items-end mb-2">
+                          <div className="flex flex-col">
+                            <span className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wide font-semibold">Current Year</span>
+                            <span className="font-bold text-slate-800 dark:text-slate-100 text-lg">{currentYear}</span>
+                          </div>
+                          <span className="text-emerald-600 dark:text-emerald-400 font-bold text-xl">
+                            {currentYearCount} <span className="text-xs text-slate-400 font-normal">prayers</span>
+                          </span>
+                        </div>
+                        <div className="h-4 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden shadow-inner">
+                          <div className="h-full bg-emerald-500 rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.max(currentYearPercent, 2)}%` }}></div>
+                        </div>
+                      </div>
+
+                      {/* Last Year */}
+                      <div>
+                        <div className="flex justify-between items-end mb-2">
+                          <div className="flex flex-col">
+                            <span className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wide font-semibold">Previous Year</span>
+                            <span className="font-bold text-slate-800 dark:text-slate-100 text-lg">{lastYear}</span>
+                          </div>
+                          <span className="text-slate-500 dark:text-slate-400 font-bold text-xl">
+                            {lastYearCount} <span className="text-xs text-slate-400 font-normal">prayers</span>
+                          </span>
+                        </div>
+                        <div className="h-4 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden shadow-inner">
+                          <div className="h-full bg-slate-400 dark:bg-slate-600 rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.max(lastYearPercent, 2)}%` }}></div>
+                        </div>
+                      </div>
+
+                      {/* Growth Summary Card */}
+                      <div className="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-100 dark:border-emerald-800/50 rounded-2xl p-5 text-center mt-4">
+                        <div className="text-sm font-semibold text-emerald-700 dark:text-emerald-400 uppercase tracking-wider mb-1">
+                          Year-over-Year Growth
+                        </div>
+                        <div className="text-4xl font-black text-emerald-600 dark:text-emerald-300 tracking-tight">
+                          {yoyGrowth}
+                        </div>
+                        <p className="text-xs text-emerald-600/70 dark:text-emerald-400/70 mt-2">
+                          {currentYearCount > lastYearCount ? "Great job! You're ahead of last year." : "Keep it up to beat last year's record!"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* Auth Error Modal */}
+              {authError && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm transition-opacity">
+                  <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden p-6 border border-slate-200 dark:border-slate-700 text-center">
+                    <div className="w-12 h-12 bg-rose-100 dark:bg-rose-900/30 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <AlertCircle size={24} />
+                    </div>
+                    <h3 className="font-bold text-lg text-slate-800 dark:text-slate-100 mb-2">Important Setup Needed</h3>
+                    <p className="text-sm text-slate-600 dark:text-slate-300 mb-6">{authError}</p>
+                    <button 
+                      onClick={() => setAuthError(null)}
+                      className="w-full py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-100 rounded-xl font-medium transition-colors"
+                    >
+                      Okay, got it
+                    </button>
+                  </div>
+                </div>
+              )}
+              
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // --- Render the App to the screen ---
+    const root = createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
